@@ -114,13 +114,14 @@ const scanAnotherBtn = document.getElementById('scanAnotherBtn');
 const toast         = document.getElementById('toast');
 
 // ─── Server Health Probe ─────────────────────────────────────────────────────
-// Retries once with a longer timeout — on first load the browser is often
-// also busy spinning up TF.js/MobileNet in parallel, which can delay event
-// loop processing enough that a single tight timeout fires before the
-// (successful) /health response is even read. Without a retry, that one
-// slow tick permanently locks the session into offline mode.
+// Retries once with a much longer timeout — Render's free tier can take
+// 20-40s to wake a sleeping instance (documented below at detectViaServer's
+// 45s timeout). The old 8s retry window gave up before a cold-start server
+// had even finished booting, permanently locking the session into offline
+// mode even though the server would have responded moments later.
 async function probeServer(attempt = 1) {
-  const timeoutMs = attempt === 1 ? 4000 : 8000;
+  const timeoutMs = attempt === 1 ? 4000 : 40000;
+  if (attempt === 2) showToast('⏳ Waking up server — this can take up to 40s…');
   try {
     const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) });
     const data = await res.json();
@@ -131,13 +132,13 @@ async function probeServer(attempt = 1) {
     }
   } catch (err) {
     if (attempt === 1) {
-      console.warn('[CropGuard] First /health probe failed, retrying…', err.message);
-      await new Promise(r => setTimeout(r, 400));
+      console.warn('[CropGuard] First /health probe failed, retrying (server may be cold-starting)…', err.message);
       return probeServer(2);
     }
     serverAvailable = false;
   }
   console.log(`[CropGuard] Server available: ${serverAvailable}`);
+  if (serverAvailable) showToast('✓ Connected to server');
 }
 
 // ─── Model Loading (TF.js — offline fallback only) ───────────────────────────
