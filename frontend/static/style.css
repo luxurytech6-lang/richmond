@@ -700,3 +700,204 @@ body {
   .bar-fill { transition: none; }
   .vf-corner { transition: none; }
 }
+/* =============================================
+   PWA INSTALL BANNERS
+============================================= */
+
+/* Android / Chrome bottom banner */
+.install-banner {
+  position: fixed;
+  bottom: 70px;
+  left: 12px;
+  right: 12px;
+  z-index: 150;
+  animation: slideUpBanner 0.35s ease;
+}
+@media (min-width: 640px) {
+  .install-banner { bottom: 20px; max-width: 420px; left: 50%; right: auto; transform: translateX(-50%); }
+}
+
+.install-banner-inner {
+  background: var(--forest-mid);
+  border: 1px solid var(--forest-rim);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--shadow-float);
+}
+
+.install-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.install-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.install-text strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--cream);
+}
+.install-text span {
+  font-size: 0.75rem;
+  color: var(--soil);
+  line-height: 1.3;
+}
+
+.install-btn {
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+
+.install-dismiss {
+  background: none;
+  border: none;
+  color: var(--soil);
+  font-size: 1rem;
+  padding: 4px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.install-dismiss:hover { color: var(--cream); }
+
+@keyframes slideUpBanner {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (min-width: 640px) {
+  @keyframes slideUpBanner {
+    from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+}
+
+/* iOS instructional modal */
+.ios-prompt {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 43, 18, 0.72);
+  backdrop-filter: blur(6px);
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.25s ease;
+}
+@media (min-width: 480px) {
+  .ios-prompt { align-items: center; }
+}
+
+.ios-prompt-card {
+  background: var(--forest-mid);
+  border: 1px solid var(--forest-rim);
+  border-radius: var(--r-xl);
+  padding: 28px 24px 24px;
+  max-width: 340px;
+  width: 100%;
+  text-align: center;
+  position: relative;
+  box-shadow: var(--shadow-float);
+  animation: slideUpCard 0.3s ease;
+}
+
+.ios-prompt-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: var(--soil);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.ios-prompt-close:hover { color: var(--cream); }
+
+.ios-prompt-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+
+.ios-prompt-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--cream);
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+
+.ios-prompt-card > p {
+  font-size: 0.88rem;
+  color: var(--soil);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.ios-steps {
+  list-style: none;
+  text-align: left;
+  margin-bottom: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ios-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 0.88rem;
+  color: var(--cream-dim);
+  line-height: 1.4;
+}
+
+.step-num {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(61, 186, 111, 0.18);
+  color: var(--leaf);
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.share-icon {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0 2px;
+  color: var(--leaf);
+}
+
+.ios-got-it {
+  width: 100%;
+  padding: 12px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideUpCard {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

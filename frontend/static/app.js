@@ -667,3 +667,105 @@ window.addEventListener('online', async () => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && currentView === 'alerts') syncAlertsFromServer();
 });
+// ─── PWA Install Prompts ──────────────────────────────────────────────────────
+// Android/Chrome → real beforeinstallprompt
+// iOS Safari     → instructional Share → Add to Home Screen guide
+
+(function setupPwaInstall() {
+  const DISMISS_KEY   = 'cg_install_dismissed';
+  const DISMISS_DAYS  = 14;          // don't re-show for 2 weeks after dismiss
+  const SHOW_DELAY_MS = 4500;        // wait a few seconds so user sees the app first
+
+  function isAlreadyInstalled() {
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true ||
+      document.referrer.includes('android-app://')
+    );
+  }
+
+  function wasRecentlyDismissed() {
+    try {
+      const ts = localStorage.getItem(DISMISS_KEY);
+      if (!ts) return false;
+      const days = (Date.now() - Number(ts)) / (1000 * 60 * 60 * 24);
+      return days < DISMISS_DAYS;
+    } catch { return false; }
+  }
+
+  function markDismissed() {
+    try { localStorage.setItem(DISMISS_KEY, String(Date.now())); } catch {}
+  }
+
+  function isIos() {
+    return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  }
+
+  // ── Android / Chromium ───────────────────────────────────────────────────
+  let deferredPrompt = null;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();                 // stop the mini-infobar
+    deferredPrompt = e;
+    if (!isAlreadyInstalled() && !wasRecentlyDismissed()) {
+      setTimeout(showAndroidBanner, SHOW_DELAY_MS);
+    }
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    hideAndroidBanner();
+    markDismissed();
+    showToast('CropGuard installed ✓');
+  });
+
+  function showAndroidBanner() {
+    const banner = document.getElementById('androidInstallBanner');
+    if (!banner || !deferredPrompt) return;
+    banner.classList.remove('hidden');
+  }
+
+  function hideAndroidBanner() {
+    const banner = document.getElementById('androidInstallBanner');
+    if (banner) banner.classList.add('hidden');
+  }
+
+  document.getElementById('androidInstallBtn')?.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    hideAndroidBanner();
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    markDismissed();                    // respect choice either way for a while
+  });
+
+  document.getElementById('androidDismissBtn')?.addEventListener('click', () => {
+    hideAndroidBanner();
+    markDismissed();
+  });
+
+  // ── iOS ──────────────────────────────────────────────────────────────────
+  function showIosPrompt() {
+    const prompt = document.getElementById('iosInstallPrompt');
+    if (prompt) prompt.classList.remove('hidden');
+  }
+
+  function hideIosPrompt() {
+    const prompt = document.getElementById('iosInstallPrompt');
+    if (prompt) prompt.classList.add('hidden');
+  }
+
+  document.getElementById('iosDismissBtn')?.addEventListener('click', () => {
+    hideIosPrompt();
+    markDismissed();
+  });
+  document.getElementById('iosGotItBtn')?.addEventListener('click', () => {
+    hideIosPrompt();
+    markDismissed();
+  });
+
+  // Show iOS instructions only when not already installed and not recently dismissed
+  if (isIos() && !isAlreadyInstalled() && !wasRecentlyDismissed()) {
+    setTimeout(showIosPrompt, SHOW_DELAY_MS);
+  }
+})();

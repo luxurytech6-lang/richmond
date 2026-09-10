@@ -1,13 +1,17 @@
 {
+  "id": "/",
   "name": "CropGuard",
   "short_name": "CropGuard",
   "description": "AI crop disease detection for smallholder farmers",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#1a3a1f",
-  "theme_color": "#1a3a1f",
+  "background_color": "#0d2b12",
+  "theme_color": "#0d2b12",
   "orientation": "portrait-primary",
   "categories": ["agriculture", "health", "utilities"],
+  "lang": "en",
+  "dir": "ltr",
   "icons": [
     {
       "src": "/icons/icon-192.png",

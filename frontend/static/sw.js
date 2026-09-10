@@ -8,7 +8,7 @@
 //    • Offline    → fallback page for navigation requests
 // ============================================================
 
-const CACHE_VERSION  = 'v3';
+const CACHE_VERSION  = 'v4';
 const SHELL_CACHE    = `cropguard-shell-${CACHE_VERSION}`;
 const CDN_CACHE       = `cropguard-cdn-${CACHE_VERSION}`;
 const IMAGE_CACHE     = `cropguard-images-${CACHE_VERSION}`;
