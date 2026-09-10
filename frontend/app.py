@@ -27,7 +27,7 @@ _ALLOWED_ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://mediumblue-ape-590742.hostingersite.com",
+    "https://darkorange-pig-312078.hostingersite.com/",
 ]
 _extra = os.getenv("FRONTEND_URL", "").strip()
 if _extra:

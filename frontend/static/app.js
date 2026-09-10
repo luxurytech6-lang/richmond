@@ -10,7 +10,7 @@
 // Change to your deployed backend URL in production.
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:5000'
-  : 'https://cropguard-api-6c66.onrender.com';   // frontend (Hostinger) and backend (Render) are on separate domains
+  : 'https://richmond-4i94.onrender.com';   // frontend (Hostinger) and backend (Render) are on separate domains
 
 // ─── Offline Keyword Fallback (used only when server is unreachable) ──────────
 const DISEASE_MAP = [
