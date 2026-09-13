@@ -782,12 +782,158 @@ body {
   }
 }
 
-/* iOS instructional modal */
-.ios-prompt {
+/* =============================================
+   DETAIL MODAL (library item / saved alert)
+============================================= */
+.detail-modal {
   position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+@media (min-width: 480px) {
+  .detail-modal { align-items: center; }
+}
+.detail-modal.hidden { display: none; }
+
+.detail-modal-backdrop {
+  position: absolute;
   inset: 0;
   background: rgba(13, 43, 18, 0.72);
   backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s ease;
+}
+
+.detail-modal-card {
+  position: relative;
+  background: var(--forest-mid);
+  border: 1px solid var(--forest-rim);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  padding: 28px 22px 22px;
+  max-width: 420px;
+  width: 100%;
+  max-height: 82vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-float);
+  animation: slideUpCard 0.3s ease;
+}
+@media (min-width: 480px) {
+  .detail-modal-card { border-radius: var(--r-xl); }
+}
+
+.detail-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: var(--soil);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  z-index: 1;
+}
+.detail-modal-close:hover { color: var(--cream); }
+
+.detail-modal-img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  margin-bottom: 16px;
+  background: var(--forest-rim);
+}
+.detail-modal-img.hidden { display: none; }
+
+.detail-modal-eyebrow {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--leaf);
+  margin-bottom: 6px;
+}
+
+.detail-modal-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.detail-modal-title-row h3 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cream);
+  line-height: 1.25;
+}
+
+.detail-modal-badge {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 99px;
+  margin-top: 2px;
+}
+
+.detail-modal-meta {
+  font-size: 0.82rem;
+  color: var(--soil);
+  margin-bottom: 14px;
+}
+.detail-modal-meta.hidden { display: none; }
+
+.detail-modal-advice {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 16px;
+  margin-top: 6px;
+}
+.detail-modal-advice h4 {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--cream);
+  margin-bottom: 6px;
+}
+.detail-modal-advice p {
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--cream-dim);
+}
+
+.detail-modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+.detail-modal-actions.hidden { display: none; }
+.detail-modal-actions button { flex: 1; }
+
+.detail-modal-actions .btn-danger {
+  background: rgba(224, 82, 82, 0.14);
+  color: var(--danger);
+  border: 1px solid rgba(224, 82, 82, 0.3);
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.detail-modal-actions .btn-danger:hover { background: rgba(224, 82, 82, 0.22); }
+
+/* Install / Add to Home Screen modal (Android + iOS) */
+.install-prompt {
+  position: fixed;
+  inset: 0;
   z-index: 300;
   display: flex;
   align-items: flex-end;
@@ -796,23 +942,32 @@ body {
   animation: fadeIn 0.25s ease;
 }
 @media (min-width: 480px) {
-  .ios-prompt { align-items: center; }
+  .install-prompt { align-items: center; }
+}
+.install-prompt.hidden { display: none; }
+
+.install-prompt-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 43, 18, 0.72);
+  backdrop-filter: blur(6px);
 }
 
-.ios-prompt-card {
+.install-prompt-card {
+  position: relative;
   background: var(--forest-mid);
   border: 1px solid var(--forest-rim);
   border-radius: var(--r-xl);
   padding: 28px 24px 24px;
-  max-width: 340px;
+  max-width: 360px;
   width: 100%;
   text-align: center;
-  position: relative;
   box-shadow: var(--shadow-float);
   animation: slideUpCard 0.3s ease;
+  z-index: 1;
 }
 
-.ios-prompt-close {
+.install-prompt-close {
   position: absolute;
   top: 14px;
   right: 14px;
@@ -823,16 +978,16 @@ body {
   cursor: pointer;
   padding: 4px 8px;
 }
-.ios-prompt-close:hover { color: var(--cream); }
+.install-prompt-close:hover { color: var(--cream); }
 
-.ios-prompt-icon {
+.install-prompt-icon {
   width: 56px;
   height: 56px;
   border-radius: 14px;
   margin-bottom: 14px;
 }
 
-.ios-prompt-card h3 {
+.install-prompt-card h3 {
   font-family: var(--font-display);
   font-size: 1.2rem;
   font-weight: 700;
@@ -841,29 +996,41 @@ body {
   letter-spacing: -0.02em;
 }
 
-.ios-prompt-card > p {
+.install-prompt-card > p {
   font-size: 0.88rem;
   color: var(--soil);
   line-height: 1.5;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
-.ios-steps {
+.install-steps {
   list-style: none;
   text-align: left;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.ios-steps li {
+.install-steps li {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   font-size: 0.88rem;
   color: var(--cream-dim);
   line-height: 1.4;
+}
+
+.install-hint {
+  font-size: 0.78rem !important;
+  color: var(--soil) !important;
+  margin-bottom: 16px !important;
+  line-height: 1.4 !important;
+}
+
+.install-prompt-ok {
+  width: 100%;
+  padding: 12px;
 }
 
 .step-num {

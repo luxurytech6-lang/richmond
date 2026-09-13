@@ -11,6 +11,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 from dotenv import load_dotenv
+import sqlite3
+from contextlib import closing
 
 load_dotenv()
 
@@ -27,6 +29,9 @@ _ALLOWED_ORIGINS = [
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+    "https://darkorange-pig-312078.hostingersite.com",
     "https://darkorange-pig-312078.hostingersite.com/",
 ]
 _extra = os.getenv("FRONTEND_URL", "").strip()
@@ -35,7 +40,78 @@ if _extra:
 
 CORS(app, origins=_ALLOWED_ORIGINS)
 
-# ─── Supabase (optional) ─────────────────────────────────────────────────────
+# ─── SQLite database ─────────────────────────────────────────────────────────
+# File-based DB (same style as a local schema.sql tool). No cloud required.
+DB_PATH = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cropguard.db"))
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads"))
+
+def get_db():
+    """Open a connection; caller should close or use as context manager."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+def init_db():
+    """Create tables from schema and seed the disease library once."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
+    with closing(get_db()) as conn:
+        if os.path.exists(schema_path):
+            with open(schema_path, encoding="utf-8") as f:
+                conn.executescript(f.read())
+        else:
+            # Fallback if schema.sql is missing next to app.py
+            conn.executescript("""
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS diseases (
+                    disease_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    crop TEXT NOT NULL,
+                    disease TEXT NOT NULL,
+                    severity TEXT NOT NULL CHECK (severity IN ('low', 'moderate', 'high')),
+                    advice TEXT NOT NULL,
+                    raw_label TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(crop, disease)
+                );
+                CREATE TABLE IF NOT EXISTS alerts (
+                    alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    disease TEXT NOT NULL,
+                    crop TEXT,
+                    severity TEXT NOT NULL CHECK (severity IN ('low', 'moderate', 'high')),
+                    confidence REAL,
+                    advice TEXT,
+                    image_path TEXT,
+                    latitude REAL,
+                    longitude REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
+            """)
+        conn.commit()
+        # Seed diseases from PLANTVIL_META if table is empty
+        count = conn.execute("SELECT COUNT(*) FROM diseases").fetchone()[0]
+        if count == 0:
+            rows = []
+            for label, meta in PLANTVIL_META.items():
+                if "healthy" in label.lower():
+                    continue
+                rows.append((
+                    meta["crop"],
+                    format_label(label),
+                    meta["severity"],
+                    meta["advice"],
+                    label,
+                ))
+            conn.executemany(
+                "INSERT OR IGNORE INTO diseases (crop, disease, severity, advice, raw_label) VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+            print(f"[CropGuard] Seeded {len(rows)} diseases into SQLite")
+        print(f"[CropGuard] SQLite ready: {DB_PATH}")
+
+# Optional Supabase (legacy) — left available if env is set, but SQLite is default
 try:
     from supabase import create_client
     SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -381,10 +457,21 @@ def index():
 
 @app.route("/health", methods=["GET"])
 def health():
+    db_ok = False
+    alert_count = 0
+    try:
+        with closing(get_db()) as conn:
+            alert_count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+            db_ok = True
+    except Exception:
+        pass
     return jsonify({
         "status":       "ok",
         "model_loaded": model is not None,
         "num_classes":  len(idx_to_class) if idx_to_class else 0,
+        "database":     "sqlite" if db_ok else "unavailable",
+        "db_path":      DB_PATH if db_ok else None,
+        "alert_count":  alert_count,
     })
 
 
@@ -428,54 +515,130 @@ def detect():
 
 @app.route("/api/alerts", methods=["POST"])
 def save_alert():
-    """POST /api/alerts — Save a detection alert to Supabase."""
-    if not supabase:
-        return jsonify({"error": "Database not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in .env"}), 503
-
+    """POST /api/alerts — Save a detection alert to SQLite."""
     data = request.get_json()
     if not data or not all(k in data for k in ("disease", "severity")):
         return jsonify({"error": "Missing required fields: disease, severity"}), 400
 
-    row = {
-        "disease":    data.get("disease"),
-        "crop":       data.get("crop"),
-        "severity":   data.get("severity"),
-        "confidence": data.get("confidence"),
-        "advice":     data.get("advice"),
-        "image_url":  data.get("image_url"),
-        "latitude":   data.get("lat"),
-        "longitude":  data.get("lng"),
-        "created_at": datetime.utcnow().isoformat(),
-    }
+    severity = (data.get("severity") or "low").lower()
+    if "high" in severity:
+        severity = "high"
+    elif "moderate" in severity or "medium" in severity:
+        severity = "moderate"
+    else:
+        severity = "low"
+
+    conf = data.get("confidence")
+    try:
+        conf = float(conf) if conf is not None else None
+    except (TypeError, ValueError):
+        conf = None
+
+    image_path = None
+    # Accept base64 image (data URI or raw) and store under uploads/
+    b64 = data.get("image") or data.get("image_url")
+    if b64 and isinstance(b64, str) and len(b64) > 64:
+        try:
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            header, raw = ("", b64)
+            if "," in b64 and b64.strip().startswith("data:"):
+                header, raw = b64.split(",", 1)
+            ext = "jpg"
+            if "png" in header.lower():
+                ext = "png"
+            elif "webp" in header.lower():
+                ext = "webp"
+            fname = f"alert_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.{ext}"
+            fpath = os.path.join(UPLOAD_DIR, fname)
+            with open(fpath, "wb") as f:
+                f.write(base64.b64decode(raw))
+            image_path = f"/uploads/{fname}"
+            print(f"[CropGuard] Saved alert image → {fpath} ({os.path.getsize(fpath)} bytes)")
+        except Exception as e:
+            print(f"[CropGuard] Could not save alert image: {e}")
 
     try:
-        res = supabase.table("alerts").insert(row).execute()
-        return jsonify({"saved": True, "id": res.data[0]["id"] if res.data else None})
+        with closing(get_db()) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO alerts (disease, crop, severity, confidence, advice, image_path, latitude, longitude)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data.get("disease"),
+                    data.get("crop"),
+                    severity,
+                    conf,
+                    data.get("advice"),
+                    image_path or data.get("image_url"),
+                    data.get("lat"),
+                    data.get("lng"),
+                ),
+            )
+            conn.commit()
+            alert_id = cur.lastrowid
+        return jsonify({"saved": True, "id": alert_id, "image_path": image_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/alerts", methods=["GET"])
 def get_alerts():
-    """GET /api/alerts — Fetch recent alerts from Supabase."""
-    if not supabase:
-        return jsonify([])
+    """GET /api/alerts — Fetch recent alerts from SQLite."""
     try:
-        res = (
-            supabase.table("alerts")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(50)
-            .execute()
-        )
-        return jsonify(res.data)
+        with closing(get_db()) as conn:
+            rows = conn.execute(
+                """
+                SELECT alert_id AS id, disease, crop, severity, confidence, advice,
+                       image_path AS image_url, latitude, longitude, created_at
+                FROM alerts
+                ORDER BY created_at DESC
+                LIMIT 50
+                """
+            ).fetchall()
+        return jsonify([dict(r) for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/alerts/<int:alert_id>", methods=["DELETE"])
+def delete_alert(alert_id):
+    """DELETE /api/alerts/<id> — Remove one alert from SQLite."""
+    try:
+        with closing(get_db()) as conn:
+            cur = conn.execute("DELETE FROM alerts WHERE alert_id = ?", (alert_id,))
+            conn.commit()
+            if cur.rowcount == 0:
+                return jsonify({"error": "Alert not found"}), 404
+        return jsonify({"deleted": True, "id": alert_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/uploads/<path:filename>")
+def serve_upload(filename):
+    """Serve saved alert images from the uploads folder."""
+    from flask import send_from_directory
+    return send_from_directory(UPLOAD_DIR, filename)
+
+
 @app.route("/api/library", methods=["GET"])
 def get_library():
-    """GET /api/library — Returns the full disease library from PlantVillage metadata."""
+    """GET /api/library — Disease library from SQLite, fallback to PLANTVIL_META."""
+    try:
+        with closing(get_db()) as conn:
+            rows = conn.execute(
+                """
+                SELECT crop, disease, severity, advice
+                FROM diseases
+                ORDER BY crop, disease
+                """
+            ).fetchall()
+        if rows:
+            return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        print(f"[CropGuard] library DB read failed: {e}")
+
     library = [
         {
             "crop":     meta["crop"],
@@ -486,7 +649,6 @@ def get_library():
         for label, meta in PLANTVIL_META.items()
         if "healthy" not in label.lower()
     ]
-    # Sort by crop then disease name
     library.sort(key=lambda x: (x["crop"], x["disease"]))
     return jsonify(library)
 
@@ -531,9 +693,8 @@ def get_classes():
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
-# load_model() is called at module level so it runs under both Gunicorn and
-# direct `python app.py` execution. Placing it inside `if __name__ == "__main__"`
-# means Gunicorn never sees it (Gunicorn imports the module, it doesn't run it).
+# init_db + load_model at module level so Gunicorn and `python app.py` both run them.
+init_db()
 load_model()
 
 if __name__ == "__main__":

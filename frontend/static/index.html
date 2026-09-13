@@ -209,6 +209,30 @@
     </div>
   </div>
 
+  <!-- ─── DETAIL MODAL (shared: library items + saved alerts) ───────────── -->
+  <div class="detail-modal hidden" id="detailModal">
+    <div class="detail-modal-backdrop" id="detailModalBackdrop"></div>
+    <div class="detail-modal-card">
+      <button class="detail-modal-close" id="detailModalClose" aria-label="Close">✕</button>
+
+      <img class="detail-modal-img hidden" id="detailModalImg" alt="" />
+
+      <div class="detail-modal-eyebrow" id="detailModalCrop">—</div>
+      <div class="detail-modal-title-row">
+        <h3 id="detailModalDisease">—</h3>
+        <span class="detail-modal-badge" id="detailModalSeverity">—</span>
+      </div>
+      <p class="detail-modal-meta hidden" id="detailModalMeta"></p>
+
+      <div class="detail-modal-advice">
+        <h4>What to do</h4>
+        <p id="detailModalAdvice">—</p>
+      </div>
+
+      <div class="detail-modal-actions" id="detailModalActions"></div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
   <script src="/app.js"></script>

@@ -7,10 +7,12 @@
 'use strict';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-// Change to your deployed backend URL in production.
+// Local dev: use same origin (empty string) so http://127.0.0.1:5000 and
+// http://localhost:5000 both work without CORS issues.
+// Production: point at the Render backend when the page is on another host.
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-  ? 'http://localhost:5000'
-  : 'https://richmond-4i94.onrender.com';   // frontend (Hostinger) and backend (Render) are on separate domains
+  ? ''   // same-origin — frontend served by Flask on :5000
+  : 'https://richmond-4i94.onrender.com';
 
 // ─── Offline Keyword Fallback (used only when server is unreachable) ──────────
 const DISEASE_MAP = [
@@ -92,6 +94,256 @@ let LIBRARY = [
   { crop: 'Squash',      disease: 'Powdery Mildew',           severity: 'moderate', advice: 'Apply potassium bicarbonate or neem oil.' },
 ];
 
+// ─── Local Database (IndexedDB + localStorage fallback) ───────────────────────
+// IndexedDB preferred (larger quota for photos). Falls back to localStorage if
+// IndexedDB fails (private mode, quota, inactive-transaction bugs).
+const CG_DB_NAME    = 'cropguard_db';
+const CG_DB_VERSION = 1;
+const ALERTS_STORE  = 'alerts';   // keyPath: 'id' (string)
+const META_STORE    = 'meta';
+const LS_ALERTS_KEY = 'cropguard_alerts_v2';
+const LS_META_KEY   = 'cropguard_meta_v2';
+
+let dbPromise = null;
+let useLocalStorageFallback = false;
+
+function openCropGuardDB() {
+  if (useLocalStorageFallback) {
+    return Promise.reject(new Error('Using localStorage fallback'));
+  }
+  if (dbPromise) return dbPromise;
+
+  dbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      useLocalStorageFallback = true;
+      reject(new Error('IndexedDB unsupported'));
+      return;
+    }
+    let settled = false;
+    const req = indexedDB.open(CG_DB_NAME, CG_DB_VERSION);
+
+    req.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(ALERTS_STORE)) {
+        db.createObjectStore(ALERTS_STORE, { keyPath: 'id' });
+        console.log('[CropGuard] Created object store:', ALERTS_STORE);
+      }
+      if (!db.objectStoreNames.contains(META_STORE)) {
+        db.createObjectStore(META_STORE);
+        console.log('[CropGuard] Created object store:', META_STORE);
+      }
+    };
+
+    req.onsuccess = () => {
+      if (settled) return;
+      settled = true;
+      const db = req.result;
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      console.log('[CropGuard] IndexedDB open OK:', CG_DB_NAME, 'stores:', [...db.objectStoreNames]);
+      resolve(db);
+    };
+
+    req.onerror = () => {
+      if (settled) return;
+      settled = true;
+      console.warn('[CropGuard] IndexedDB open failed:', req.error);
+      useLocalStorageFallback = true;
+      dbPromise = null;
+      reject(req.error || new Error('IndexedDB open failed'));
+    };
+
+    req.onblocked = () => {
+      console.warn('[CropGuard] IndexedDB open blocked — close other tabs');
+    };
+  });
+
+  return dbPromise;
+}
+
+function lsReadAlerts() {
+  try {
+    const raw = localStorage.getItem(LS_ALERTS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+function lsWriteAlerts(alerts) {
+  localStorage.setItem(LS_ALERTS_KEY, JSON.stringify(alerts));
+}
+
+function lsReadMeta(key, fallback) {
+  try {
+    const raw = localStorage.getItem(LS_META_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj[key] !== undefined ? obj[key] : fallback;
+  } catch { return fallback; }
+}
+
+function lsWriteMeta(key, value) {
+  let obj = {};
+  try { obj = JSON.parse(localStorage.getItem(LS_META_KEY) || '{}') || {}; } catch {}
+  obj[key] = value;
+  localStorage.setItem(LS_META_KEY, JSON.stringify(obj));
+}
+
+async function dbGetAllAlerts() {
+  if (useLocalStorageFallback) return lsReadAlerts();
+  try {
+    const db = await openCropGuardDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(ALERTS_STORE, 'readonly');
+      const store = tx.objectStore(ALERTS_STORE);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[CropGuard] dbGetAllAlerts → localStorage:', err.message);
+    useLocalStorageFallback = true;
+    return lsReadAlerts();
+  }
+}
+
+async function dbPutAlert(alert) {
+  const row = { ...alert, id: String(alert.id) };
+  if (useLocalStorageFallback) {
+    const all = lsReadAlerts().filter(a => String(a.id) !== row.id);
+    all.push(row);
+    lsWriteAlerts(all);
+    return;
+  }
+  try {
+    const db = await openCropGuardDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(ALERTS_STORE, 'readwrite');
+      tx.objectStore(ALERTS_STORE).put(row);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+    });
+  } catch (err) {
+    console.warn('[CropGuard] dbPutAlert → localStorage:', err.message);
+    useLocalStorageFallback = true;
+    const all = lsReadAlerts().filter(a => String(a.id) !== row.id);
+    all.push(row);
+    lsWriteAlerts(all);
+  }
+}
+
+async function dbDeleteAlert(id) {
+  const sid = String(id);
+  if (useLocalStorageFallback) {
+    lsWriteAlerts(lsReadAlerts().filter(a => String(a.id) !== sid));
+    return;
+  }
+  try {
+    const db = await openCropGuardDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(ALERTS_STORE, 'readwrite');
+      tx.objectStore(ALERTS_STORE).delete(sid);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[CropGuard] dbDeleteAlert → localStorage:', err.message);
+    useLocalStorageFallback = true;
+    lsWriteAlerts(lsReadAlerts().filter(a => String(a.id) !== sid));
+  }
+}
+
+async function dbReplaceAllAlerts(alerts) {
+  const rows = (alerts || []).map(a => ({ ...a, id: String(a.id) }));
+  if (useLocalStorageFallback) {
+    lsWriteAlerts(rows);
+    return;
+  }
+  try {
+    const db = await openCropGuardDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(ALERTS_STORE, 'readwrite');
+      const store = tx.objectStore(ALERTS_STORE);
+      store.clear();
+      rows.forEach(a => store.put(a));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[CropGuard] dbReplaceAllAlerts → localStorage:', err.message);
+    useLocalStorageFallback = true;
+    lsWriteAlerts(rows);
+  }
+}
+
+async function dbGetMeta(key, fallback) {
+  if (useLocalStorageFallback) return lsReadMeta(key, fallback);
+  try {
+    const db = await openCropGuardDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(META_STORE, 'readonly');
+      const req = tx.objectStore(META_STORE).get(key);
+      req.onsuccess = () => resolve(req.result !== undefined ? req.result : fallback);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    useLocalStorageFallback = true;
+    return lsReadMeta(key, fallback);
+  }
+}
+
+async function dbSetMeta(key, value) {
+  if (useLocalStorageFallback) {
+    lsWriteMeta(key, value);
+    return;
+  }
+  try {
+    const db = await openCropGuardDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(META_STORE, 'readwrite');
+      tx.objectStore(META_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    useLocalStorageFallback = true;
+    lsWriteMeta(key, value);
+  }
+}
+
+async function migrateLegacyLocalStorage() {
+  try {
+    const legacyAlerts = JSON.parse(localStorage.getItem('cropguard_alerts') || '[]');
+    if (Array.isArray(legacyAlerts) && legacyAlerts.length) {
+      const existing = await dbGetAllAlerts();
+      if (existing.length === 0) {
+        for (const a of legacyAlerts) {
+          await dbPutAlert({ ...a, id: String(a.id) });
+        }
+        console.log('[CropGuard] Migrated', legacyAlerts.length, 'legacy alerts');
+      }
+    }
+    const legacyDeleted = JSON.parse(localStorage.getItem('cropguard_deleted_alert_ids') || 'null');
+    if (legacyDeleted && Array.isArray(legacyDeleted)) {
+      const current = await dbGetMeta('deletedAlertIds', []);
+      await dbSetMeta('deletedAlertIds', Array.from(new Set([...current, ...legacyDeleted])));
+    }
+    localStorage.removeItem('cropguard_alerts');
+    localStorage.removeItem('cropguard_deleted_alert_ids');
+  } catch (err) {
+    console.warn('[CropGuard] Legacy migration skipped:', err.message);
+  }
+}
+
+async function ensureDBReady() {
+  try {
+    await openCropGuardDB();
+  } catch (err) {
+    console.warn('[CropGuard] IndexedDB unavailable, using localStorage:', err.message);
+    useLocalStorageFallback = true;
+  }
+}
+
 // ─── State ───────────────────────────────────────────────────────────────────
 let tfModel            = null;
 let currentImageDataURL = null;
@@ -123,22 +375,29 @@ async function probeServer(attempt = 1) {
   const timeoutMs = attempt === 1 ? 4000 : 40000;
   if (attempt === 2) showToast('⏳ Waking up server — this can take up to 40s…');
   try {
-    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const url = `${API_BASE}/health`;
+    console.log('[CropGuard] Probing', url || '/health', '(attempt', attempt + ')');
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    // Server is reachable if status is ok — even without a model we can still
+    // use /api/alerts and /api/library. Detection will fall back to browser.
     serverAvailable = data.status === 'ok';
-    if (!data.model_loaded) {
-      console.warn('[CropGuard] Server online but model not loaded — falling back to browser inference.');
-      serverAvailable = false;
+    if (serverAvailable && !data.model_loaded) {
+      console.warn('[CropGuard] Server online but model not loaded — detection will use browser MobileNet.');
     }
+    console.log('[CropGuard] /health response:', data);
   } catch (err) {
     if (attempt === 1) {
-      console.warn('[CropGuard] First /health probe failed, retrying (server may be cold-starting)…', err.message);
+      console.warn('[CropGuard] First /health probe failed, retrying…', err.message);
       return probeServer(2);
     }
+    console.warn('[CropGuard] Server probe failed:', err.message);
     serverAvailable = false;
   }
   console.log(`[CropGuard] Server available: ${serverAvailable}`);
   if (serverAvailable) showToast('✓ Connected to server');
+  else showToast('⚠️ Server offline — using offline mode');
 }
 
 // ─── Model Loading (TF.js — offline fallback only) ───────────────────────────
@@ -430,22 +689,25 @@ saveAlertBtn.addEventListener('click', async () => {
   const conf     = document.getElementById('confidenceVal').textContent;
 
   const alertObj = {
-    id:        Date.now(),
+    id:        String(Date.now()),
+    ts:        Date.now(),
     disease, crop, severity, advice, conf,
     timestamp: new Date().toLocaleDateString('en-NG', { day:'numeric', month:'short', year:'numeric' }),
     image:     currentImageDataURL,
-    synced:    false,   // true once confirmed saved to the database
+    synced:    false,
   };
 
-  // Persist locally first (always works offline, shows instantly)
-  const stored = JSON.parse(localStorage.getItem('cropguard_alerts') || '[]');
-  stored.unshift(alertObj);
-  localStorage.setItem('cropguard_alerts', JSON.stringify(stored.slice(0, 50)));
-  renderAlerts();
+  try {
+    await dbPutAlert(alertObj);
+  } catch (err) {
+    console.error('[CropGuard] Failed to save alert:', err);
+    showToast('Could not save alert');
+    return;
+  }
+  await renderAlerts();
 
-  // Also post to Supabase via backend (best-effort)
   let savedToServer = false;
-  if (serverAvailable) {
+  if (serverAvailable !== false) {
     try {
       const res = await fetch(`${API_BASE}/api/alerts`, {
         method:  'POST',
@@ -454,22 +716,27 @@ saveAlertBtn.addEventListener('click', async () => {
           disease,
           crop,
           severity:   severityClass(severity),
-          confidence: parseFloat(conf),
+          confidence: parseFloat(String(conf).replace('%', '')) || null,
           advice,
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(8000),
       });
-      savedToServer = res.ok;
+      if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        savedToServer = true;
+        await dbPutAlert({
+          ...alertObj,
+          synced: true,
+          serverId: body.id != null ? body.id : undefined,
+        });
+      }
     } catch {
-      // Supabase save failed — local copy is still safe, will retry on next sync
+      // stay local; pushPendingAlerts will retry later
     }
   }
 
-  showToast(savedToServer ? 'Alert saved ✓' : 'Alert saved locally — will sync when online ✓');
-
-  if (savedToServer) {
-    await syncAlertsFromServer();   // pull the canonical row back, replacing the temp local entry
-  }
+  showToast(savedToServer ? 'Alert saved ✓' : 'Alert saved — view it on the Alerts page ✓');
+  await renderAlerts();
 });
 
 // ─── Share ────────────────────────────────────────────────────────────────────
@@ -496,6 +763,7 @@ function serverAlertToLocal(row) {
     severity:  row.severity || 'low',
     advice:    row.advice || '',
     conf:      row.confidence != null ? `${row.confidence}%` : '—',
+    ts:        row.created_at ? new Date(row.created_at).getTime() : Date.now(),
     timestamp: row.created_at
       ? new Date(row.created_at).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })
       : '',
@@ -504,35 +772,113 @@ function serverAlertToLocal(row) {
   };
 }
 
-// THE FIX: this was missing entirely — alerts were only ever read from
-// localStorage, never pulled from the database. Call this to actually fetch
-// what's saved server-side and merge it into the local cache.
-async function syncAlertsFromServer() {
-  if (serverAvailable === false) return;
+// Deleted alerts are tracked in the IndexedDB meta store (no DELETE endpoint
+// on the backend), so a synced alert removed via the detail modal doesn't get
+// re-pulled from the server on the next sync and reappear in the list.
+async function getDeletedIds() {
+  try { return await dbGetMeta('deletedAlertIds', []); }
+  catch { return []; }
+}
+
+async function markAlertDeleted(id) {
   try {
-    const res = await fetch(`${API_BASE}/api/alerts`, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return;
-    const rows = await res.json();
-    if (!Array.isArray(rows)) return;   // e.g. {"error": "..."} when Supabase isn't configured
-
-    const serverAlerts = rows.map(serverAlertToLocal);
-
-    // Keep local-only alerts that haven't synced yet (saved while offline) so
-    // they aren't wiped out by a server fetch that doesn't know about them.
-    const local   = JSON.parse(localStorage.getItem('cropguard_alerts') || '[]');
-    const pending = local.filter(a => a.synced === false);
-
-    const merged = [...pending, ...serverAlerts].slice(0, 50);
-    localStorage.setItem('cropguard_alerts', JSON.stringify(merged));
-    renderAlerts();
-  } catch {
-    // Network hiccup — keep showing whatever's cached locally, no error shown to user
+    const deleted = await getDeletedIds();
+    if (!deleted.includes(id)) {
+      // Cap so this list can't grow forever
+      await dbSetMeta('deletedAlertIds', [...deleted, id].slice(-200));
+    }
+  } catch (err) {
+    console.warn('[CropGuard] Could not record deletion:', err.message);
   }
 }
 
-function renderAlerts() {
-  const list   = document.getElementById('alertsList');
-  const stored = JSON.parse(localStorage.getItem('cropguard_alerts') || '[]');
+async function pushPendingAlerts() {
+  if (serverAvailable === false) return;
+  const local = await dbGetAllAlerts();
+  const pending = local.filter(a => a.synced === false);
+  for (const a of pending) {
+    try {
+      const res = await fetch(`${API_BASE}/api/alerts`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          disease:    a.disease,
+          crop:       a.crop,
+          severity:   severityClass(a.severity),
+          confidence: parseFloat(String(a.conf || '').replace('%', '')) || null,
+          advice:     a.advice,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        await dbPutAlert({
+          ...a,
+          synced: true,
+          serverId: body.id != null ? body.id : a.serverId,
+        });
+      }
+    } catch {
+      // retry on next sync
+    }
+  }
+}
+
+async function syncAlertsFromServer() {
+  if (serverAvailable === false) return;
+  try {
+    await pushPendingAlerts();
+
+    const res = await fetch(`${API_BASE}/api/alerts`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return;
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return;
+
+    const deletedIds = await getDeletedIds();
+    const serverAlerts = rows
+      .map(serverAlertToLocal)
+      .filter(a => !deletedIds.includes(String(a.id)));
+
+    const local = await dbGetAllAlerts();
+    const localKept = local.filter(a => !deletedIds.includes(String(a.id)));
+
+    const serverOnly = serverAlerts.filter(sa => {
+      if (localKept.some(l => l.serverId != null && String(l.serverId) === String(sa.id.replace(/^srv_/, '')))) {
+        return false;
+      }
+      const saTs = sa.ts || 0;
+      return !localKept.some(l =>
+        l.disease === sa.disease &&
+        Math.abs((l.ts || 0) - saTs) < 120000
+      );
+    });
+
+    const merged = [...localKept, ...serverOnly]
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const capped = merged.length > 200 ? merged.slice(0, 200) : merged;
+    await dbReplaceAllAlerts(capped);
+    await renderAlerts();
+  } catch {
+    // keep local cache
+  }
+}
+
+async function renderAlerts() {
+  const list = document.getElementById('alertsList');
+  if (!list) return;
+
+  let stored = [];
+  try {
+    const all = await dbGetAllAlerts();
+    stored = (all || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  } catch (err) {
+    console.warn('[CropGuard] Could not read alerts:', err.message);
+    list.innerHTML = `
+      <div class="empty-state">
+        <p>Could not load saved alerts.<br/>Try refreshing the page.</p>
+      </div>`;
+    return;
+  }
 
   if (!stored.length) {
     list.innerHTML = `
@@ -544,11 +890,11 @@ function renderAlerts() {
   }
 
   list.innerHTML = stored.map(a => `
-    <div class="alert-item">
-      ${a.image ? `<img class="alert-thumb" src="${a.image}" alt="${a.disease}" loading="lazy"/>` : '<div class="alert-thumb"></div>'}
+    <div class="alert-item" role="button" tabindex="0" data-id="${escapeHTML(String(a.id))}" aria-label="${escapeHTML(a.disease || '')} on ${escapeHTML(a.crop || '')}">
+      ${a.image ? `<img class="alert-thumb" src="${a.image}" alt="${escapeHTML(a.disease || '')}" loading="lazy"/>` : '<div class="alert-thumb"></div>'}
       <div class="alert-info">
-        <div class="alert-disease">${a.disease}</div>
-        <div class="alert-meta">${a.crop} · ${a.timestamp} · ${a.conf} confidence</div>
+        <div class="alert-disease">${escapeHTML(a.disease || 'Unknown')}</div>
+        <div class="alert-meta">${escapeHTML(a.crop || '—')} · ${escapeHTML(a.timestamp || '')} · ${escapeHTML(String(a.conf || '—'))} confidence</div>
       </div>
       <span class="alert-sev ${severityClass(a.severity)}">${severityLabel(a.severity)}</span>
     </div>
@@ -587,8 +933,8 @@ function renderLibrary(filter = '') {
     return;
   }
 
-  grid.innerHTML = items.map(item => `
-    <div class="lib-card" role="button" tabindex="0" aria-label="${item.disease} on ${item.crop}">
+  grid.innerHTML = items.map((item, i) => `
+    <div class="lib-card" role="button" tabindex="0" data-index="${LIBRARY.indexOf(item)}" aria-label="${item.disease} on ${item.crop}">
       <div class="lib-crop">${item.crop}</div>
       <div class="lib-disease">${item.disease}</div>
       <span class="lib-sev ${severityClass(item.severity)}">${severityLabel(item.severity)} risk</span>
@@ -614,17 +960,146 @@ document.getElementById('librarySearch').addEventListener('input', (e) => {
   renderLibrary(e.target.value);
 });
 
+// ─── Detail Modal (library item / saved alert) ─────────────────────────────────
+const detailModal        = document.getElementById('detailModal');
+const detailModalImg     = document.getElementById('detailModalImg');
+const detailModalCrop    = document.getElementById('detailModalCrop');
+const detailModalDisease = document.getElementById('detailModalDisease');
+const detailModalSev     = document.getElementById('detailModalSeverity');
+const detailModalMeta    = document.getElementById('detailModalMeta');
+const detailModalAdvice  = document.getElementById('detailModalAdvice');
+const detailModalActions = document.getElementById('detailModalActions');
+
+function openDetailModal({ crop, disease, severity, advice, image, meta, actionsHTML }) {
+  detailModalCrop.textContent    = crop || '—';
+  detailModalDisease.textContent = disease || '—';
+  detailModalAdvice.textContent  = advice || 'No advice available.';
+
+  const sevClass = severityClass(severity);
+  detailModalSev.textContent = severityLabel(severity) + ' Risk';
+  detailModalSev.className   = 'detail-modal-badge ' + sevClass;
+
+  if (image) {
+    detailModalImg.src = image;
+    detailModalImg.alt = disease || '';
+    detailModalImg.classList.remove('hidden');
+  } else {
+    detailModalImg.removeAttribute('src');
+    detailModalImg.classList.add('hidden');
+  }
+
+  if (meta) {
+    detailModalMeta.textContent = meta;
+    detailModalMeta.classList.remove('hidden');
+  } else {
+    detailModalMeta.classList.add('hidden');
+  }
+
+  detailModalActions.innerHTML = actionsHTML || '';
+  detailModalActions.classList.toggle('hidden', !actionsHTML);
+
+  detailModal.classList.remove('hidden');
+}
+
+function closeDetailModal() {
+  detailModal.classList.add('hidden');
+}
+
+document.getElementById('detailModalClose').addEventListener('click', closeDetailModal);
+document.getElementById('detailModalBackdrop').addEventListener('click', closeDetailModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !detailModal.classList.contains('hidden')) closeDetailModal();
+});
+
+// Library cards → open modal with disease/treatment info
+const libraryGrid = document.getElementById('libraryGrid');
+libraryGrid.addEventListener('click', (e) => {
+  const card = e.target.closest('.lib-card');
+  if (!card) return;
+  const item = LIBRARY[Number(card.dataset.index)];
+  if (!item) return;
+  openDetailModal({
+    crop: item.crop,
+    disease: item.disease,
+    severity: item.severity,
+    advice: item.advice,
+    actionsHTML: `<button class="btn-ghost" onclick="document.getElementById('detailModal').classList.add('hidden')">Close</button>`,
+  });
+});
+libraryGrid.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.lib-card');
+  if (!card) return;
+  e.preventDefault();
+  card.click();
+});
+
+// Saved alerts → open modal with the full scan result + delete option
+const alertsList = document.getElementById('alertsList');
+alertsList.addEventListener('click', async (e) => {
+  const item = e.target.closest('.alert-item');
+  if (!item) return;
+  const id = String(item.dataset.id || '');
+  const stored = await dbGetAllAlerts();
+  const alertObj = stored.find(a =>
+    String(a.id) === id ||
+    (a.serverId != null && (`srv_${a.serverId}` === id || String(a.serverId) === id))
+  );
+  if (!alertObj) {
+    console.warn('[CropGuard] Alert not found for id', id, 'have', stored.map(a => a.id));
+    showToast('Could not open that alert');
+    return;
+  }
+  const photo = alertObj.image || alertObj.image_url || null;
+  openDetailModal({
+    crop: alertObj.crop,
+    disease: alertObj.disease,
+    severity: alertObj.severity,
+    advice: alertObj.advice,
+    image: photo,
+    meta: `${alertObj.timestamp || ''} · ${alertObj.conf || '—'} confidence${alertObj.synced ? '' : ' · not yet synced'}`,
+    actionsHTML: `<button class="btn-danger" id="detailDeleteBtn">Delete</button>`,
+  });
+  document.getElementById('detailDeleteBtn')?.addEventListener('click', async () => {
+    await dbDeleteAlert(String(alertObj.id));
+    await markAlertDeleted(String(alertObj.id));
+    if (String(alertObj.id) !== id) await markAlertDeleted(id);
+    // Also try server DELETE when we have a numeric server id
+    const sid = alertObj.serverId || (String(alertObj.id).startsWith('srv_') ? alertObj.id.replace(/^srv_/, '') : null);
+    if (sid && serverAvailable !== false) {
+      try {
+        await fetch(`${API_BASE}/api/alerts/${sid}`, { method: 'DELETE', signal: AbortSignal.timeout(5000) });
+      } catch (_) {}
+    }
+    await renderAlerts();
+    closeDetailModal();
+    showToast('Alert deleted');
+  });
+});
+alertsList.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const item = e.target.closest('.alert-item');
+  if (!item) return;
+  e.preventDefault();
+  item.click();
+});
+
 // ─── Navigation ───────────────────────────────────────────────────────────────
 let currentView = 'scan';
 
 function switchView(viewId) {
-  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${viewId}`));
+  document.querySelectorAll('.view').forEach(v => {
+    const on = v.id === `view-${viewId}`;
+    v.classList.toggle('active', on);
+    // `.hidden` uses !important — must remove it or the active view stays invisible
+    v.classList.toggle('hidden', !on);
+  });
   document.querySelectorAll('.nav-btn, .bnav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.view === viewId);
   });
   currentView = viewId;
   if (viewId === 'alerts')  { renderAlerts(); syncAlertsFromServer(); }
-  if (viewId === 'library') renderLibrary();
+  if (viewId === 'library') { renderLibrary(); fetchLibrary(); }
 }
 
 document.querySelectorAll('[data-view]').forEach(btn => {
@@ -642,13 +1117,15 @@ function showToast(msg) {
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 (async () => {
-  await probeServer();          // check if backend is up
-  renderAlerts();
-  syncAlertsFromServer();       // pull real alerts from the database on load
+  await ensureDBReady();               // open IndexedDB (or fall back to localStorage)
+  await migrateLegacyLocalStorage();   // one-time: move any old localStorage alerts
+  await probeServer();                 // check if backend is up
+  await renderAlerts();
+  syncAlertsFromServer();              // pull real alerts from the database on load
   renderLibrary();
-  fetchLibrary();               // refresh library from backend if available
+  fetchLibrary();                      // refresh library from backend if available
   if (!serverAvailable) {
-    loadModel();                // pre-load browser model if we'll need it
+    loadModel();                       // pre-load browser model if we'll need it
   }
 })();
 
