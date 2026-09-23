@@ -145,3 +145,4 @@ cropguard/
     ├── schema.sql       ← Supabase table setup
     └── .env.example     ← Environment variables
 ```
+update files

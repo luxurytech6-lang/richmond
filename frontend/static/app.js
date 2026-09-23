@@ -681,6 +681,33 @@ async function fetchEnrichment(result) {
 }
 
 
+
+// ─── Geolocation (optional; used when saving alerts) ─────────────────────────
+// Best-effort only. Denied permission, timeout, or insecure context → null coords.
+// Never blocks the save flow for more than a few seconds.
+function getCurrentPosition(timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve({ lat: null, lng: null });
+      return;
+    }
+    const opts = { enableHighAccuracy: false, timeout: timeoutMs, maximumAge: 60000 };
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        });
+      },
+      (err) => {
+        console.warn('[CropGuard] Geolocation unavailable:', err && err.message);
+        resolve({ lat: null, lng: null });
+      },
+      opts
+    );
+  });
+}
+
 saveAlertBtn.addEventListener('click', async () => {
   const disease  = document.getElementById('resultDisease').textContent;
   const crop     = document.getElementById('cropDetected').textContent;
@@ -688,12 +715,18 @@ saveAlertBtn.addEventListener('click', async () => {
   const advice   = document.getElementById('adviceText').textContent;
   const conf     = document.getElementById('confidenceVal').textContent;
 
+  // Capture GPS when the farmer saves (permission prompt happens here).
+  // Failures are non-fatal — alert still saves without coordinates.
+  const { lat, lng } = await getCurrentPosition(5000);
+
   const alertObj = {
     id:        String(Date.now()),
     ts:        Date.now(),
     disease, crop, severity, advice, conf,
     timestamp: new Date().toLocaleDateString('en-NG', { day:'numeric', month:'short', year:'numeric' }),
     image:     currentImageDataURL,
+    lat:       lat,
+    lng:       lng,
     synced:    false,
   };
 
@@ -718,6 +751,9 @@ saveAlertBtn.addEventListener('click', async () => {
           severity:   severityClass(severity),
           confidence: parseFloat(String(conf).replace('%', '')) || null,
           advice,
+          lat,
+          lng,
+          image: currentImageDataURL || undefined,
         }),
         signal: AbortSignal.timeout(8000),
       });
@@ -768,6 +804,8 @@ function serverAlertToLocal(row) {
       ? new Date(row.created_at).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })
       : '',
     image:     row.image_url || null,
+    lat:       row.latitude != null ? row.latitude : null,
+    lng:       row.longitude != null ? row.longitude : null,
     synced:    true,
   };
 }
@@ -807,6 +845,9 @@ async function pushPendingAlerts() {
           severity:   severityClass(a.severity),
           confidence: parseFloat(String(a.conf || '').replace('%', '')) || null,
           advice:     a.advice,
+          lat:        a.lat != null ? a.lat : undefined,
+          lng:        a.lng != null ? a.lng : undefined,
+          image:      a.image || undefined,
         }),
         signal: AbortSignal.timeout(8000),
       });
