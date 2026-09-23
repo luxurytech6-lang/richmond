@@ -23,8 +23,7 @@ DATASET LAYOUTS HANDLED
                    "Original Images/", "Augmented Images/", etc). The script
                    auto-detects them by keyword and renames into our
                    Crop___Condition convention. Use this for datasets you
-                   haven't manually inspected yet — if it can't find the
-                   folders, it'll tell you exactly where to look.
+                   haven't manually inspected yet — .
 
   "csv"            A flat image folder + a CSV of (image_id, label) plus a
                    label_num_to_disease_map.json — e.g. Kaggle's "Cassava
